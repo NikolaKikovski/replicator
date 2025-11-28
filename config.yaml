@@ -1,0 +1,33 @@
+source:
+  connection_string: "postgres://postgres:password@127.0.0.1:15432/source_db?replication=database&sslmode=disable"
+  slot_name: "replicator_slot"
+  publication: "my_pub"
+
+targets:
+  postgres:
+    - name: "pg_main"
+      connection_string: "postgres://postgres:password@127.0.0.1:15433/sink_db?sslmode=disable"
+      batch_size: 1000
+      batch_interval: 1s
+      retry:
+        max_attempts: 5
+        backoff: 200ms
+
+  # Disabled until ClickHouse is configured
+  # clickhouse:
+  #   - name: "ch_analytics"
+  #     connection_string: "clickhouse://127.0.0.1:9000"
+  #     batch_size: 10000
+  #     batch_interval: 5s
+  #     retry:
+  #       max_attempts: 3
+  #       backoff: 500ms
+
+pipeline:
+  worker_count: 8
+  buffer_size: 20000
+  batch_size: 1000
+  batch_interval: 1s
+
+telemetry:
+  address: ":9090"
