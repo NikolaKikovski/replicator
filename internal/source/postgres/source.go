@@ -52,6 +52,23 @@ func (s *Source) Start(ctx context.Context) error {
 	safeLSN := s.checkpoint.GetSafeLSN()
 	if safeLSN > 0 {
 		startLSN = pglogrepl.LSN(safeLSN)
+	} else {
+		// Try to get confirmed_flush_lsn from slot
+		// Use simple query protocol since we are using pgconn
+		mrr := conn.Exec(ctx, fmt.Sprintf("SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = '%s'", s.cfg.SlotName))
+		results, err := mrr.ReadAll()
+		if err != nil {
+			slog.Warn("Failed to query slot LSN, defaulting to current XLogPos", "error", err)
+		} else if len(results) > 0 && len(results[0].Rows) > 0 {
+			lsnStr := string(results[0].Rows[0][0])
+			parsed, err := pglogrepl.ParseLSN(lsnStr)
+			if err != nil {
+				slog.Warn("Failed to parse slot LSN, defaulting to current XLogPos", "error", err, "lsn_str", lsnStr)
+			} else {
+				startLSN = parsed
+				slog.Info("Resuming from slot LSN", "lsn", startLSN)
+			}
+		}
 	}
 
 	slog.Info("Starting replication", "slot", s.cfg.SlotName, "start_lsn", startLSN)

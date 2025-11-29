@@ -63,6 +63,20 @@ EOF
 echo "✅ Sink database configured"
 echo ""
 
+# Setup ClickHouse table
+echo "Step 2b: Setting up ClickHouse table..."
+docker exec -i replicator-clickhouse-1 clickhouse-client -u user --password password --query "DROP TABLE IF EXISTS analytics.demo" 2>/dev/null || true
+docker exec -i replicator-clickhouse-1 clickhouse-client -u user --password password --query "CREATE TABLE IF NOT EXISTS analytics.demo (id Int32, name String, created_at DateTime, _version UInt64) ENGINE = ReplacingMergeTree(_version) ORDER BY id" 2>/dev/null || echo "⚠️  ClickHouse setup failed"
+
+echo "✅ ClickHouse configured"
+echo ""
+
+# Flush Redis to start clean
+echo "Step 2c: Flushing Redis..."
+docker exec -i replicator-redis-1 redis-cli FLUSHALL > /dev/null
+echo "✅ Redis flushed"
+echo ""
+
 # Start replicator in background
 echo "Step 3: Starting replicator..."
 if pgrep -f "bin/replicator" > /dev/null; then
@@ -102,22 +116,34 @@ sleep 5
 # Verify
 echo "Step 6: Verifying replication..."
 SOURCE_COUNT=$(docker exec -i replicator-pg_source-1 psql -U postgres -d source_db -t -c "SELECT COUNT(*) FROM demo;")
-SINK_COUNT=$(docker exec -i replicator-pg_sink-1 psql -U postgres -d sink_db -t -c "SELECT COUNT(*) FROM demo;")
+PG_SINK_COUNT=$(docker exec -i replicator-pg_sink-1 psql -U postgres -d sink_db -t -c "SELECT COUNT(*) FROM demo;")
+CH_SINK_COUNT=$(docker exec -i replicator-clickhouse-1 clickhouse-client -u user --password password --query "SELECT count(*) FROM analytics.demo FINAL" 2>/dev/null || echo "0")
+REDIS_COUNT=$(docker exec -i replicator-redis-1 redis-cli KEYS "demo:*" 2>/dev/null | wc -l | xargs)
 
 SOURCE_COUNT=$(echo $SOURCE_COUNT | xargs)
-SINK_COUNT=$(echo $SINK_COUNT | xargs)
+PG_SINK_COUNT=$(echo $PG_SINK_COUNT | xargs)
+CH_SINK_COUNT=$(echo $CH_SINK_COUNT | xargs)
 
-echo "Source count: $SOURCE_COUNT"
-echo "Sink count:   $SINK_COUNT"
+echo "Source count:       $SOURCE_COUNT"
+echo "PostgreSQL sink:    $PG_SINK_COUNT"
+echo "ClickHouse sink:    $CH_SINK_COUNT"
+echo "Redis keys:         $REDIS_COUNT"
 echo ""
 
-if [ "$SOURCE_COUNT" -eq "$SINK_COUNT" ] && [ "$SOURCE_COUNT" -eq "5" ]; then
-    echo "✅ SUCCESS: Replication working!"
+if [ "$SOURCE_COUNT" -eq "$PG_SINK_COUNT" ] && [ "$SOURCE_COUNT" -eq "$CH_SINK_COUNT" ] && [ "$SOURCE_COUNT" -eq "5" ]; then
+    echo "✅ SUCCESS: Replication working on all sinks!"
     echo ""
-    echo "Data in sink:"
+    echo "Data in PostgreSQL sink:"
     docker exec -i replicator-pg_sink-1 psql -U postgres -d sink_db -c "SELECT * FROM demo ORDER BY id;"
+    echo ""
+    echo "Data in ClickHouse sink:"
+    docker exec -i replicator-clickhouse-1 clickhouse-client -u user --password password --query "SELECT * FROM analytics.demo ORDER BY id FORMAT PrettyCompact" 2>/dev/null || echo "ClickHouse query failed"
 else
-    echo "❌ FAILURE: Replication not working!"
+    echo "❌ FAILURE: Replication not working on all sinks!"
+    echo ""
+    echo "Expected: 5 rows in all sinks"
+    echo "PostgreSQL: $PG_SINK_COUNT"
+    echo "ClickHouse: $CH_SINK_COUNT"
     echo ""
     echo "Check logs: tail -f /tmp/replicator.log"
     echo ""

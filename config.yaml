@@ -13,15 +13,24 @@ targets:
         max_attempts: 5
         backoff: 200ms
 
-  # Disabled until ClickHouse is configured
-  # clickhouse:
-  #   - name: "ch_analytics"
-  #     connection_string: "clickhouse://127.0.0.1:9000"
-  #     batch_size: 10000
-  #     batch_interval: 5s
-  #     retry:
-  #       max_attempts: 3
-  #       backoff: 500ms
+  clickhouse:
+    - name: "ch_analytics"
+      connection_string: "clickhouse://user:password@127.0.0.1:9000/analytics"
+      batch_size: 10000
+      batch_interval: 5s
+      retry:
+        max_attempts: 3
+        backoff: 500ms
+
+  redis:
+    - name: "redis_cache"
+      connection_string: "redis://127.0.0.1:6399"
+      key_pattern: "{{.table}}:{{.id}}"  # Dynamic: uses table name
+      batch_size: 1000
+      batch_interval: 1s
+      retry:
+        max_attempts: 3
+        backoff: 100ms
 
 pipeline:
   worker_count: 8

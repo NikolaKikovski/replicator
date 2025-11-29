@@ -5,7 +5,7 @@ echo "==================================="
 echo "Performance Benchmark"
 echo "==================================="
 
-SOURCE_DB="postgres://postgres:password@localhost:5432/source_db"
+SOURCE_DB="postgres://postgres:password@localhost:15432/source_db"
 
 # Test different batch sizes
 for BATCH_SIZE in 100 500 1000 5000 10000; do

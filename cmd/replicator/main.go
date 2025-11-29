@@ -67,6 +67,19 @@ func main() {
 		slog.Info("Initialized ClickHouse sink", "name", t.Name)
 	}
 
+	// Initialize Redis Sinks
+	for _, t := range cfg.Targets.Redis {
+		s, err := sink.NewRedisSink(t)
+		if err != nil {
+			slog.Error("Failed to init redis sink", "name", t.Name, "error", err)
+			os.Exit(1)
+		}
+		// Wrap with Retry
+		rs := sink.NewRetrySink(t.Name, s, t.Retry)
+		sinks = append(sinks, rs)
+		slog.Info("Initialized Redis sink", "name", t.Name)
+	}
+
 	if len(sinks) == 0 {
 		slog.Error("No sinks configured")
 		os.Exit(1)

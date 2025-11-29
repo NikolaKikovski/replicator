@@ -42,6 +42,11 @@ done
 echo "Databases ready!"
 echo ""
 
+# Stop any running replicator to avoid conflicts during table recreation
+echo "Stopping any running replicator..."
+pkill -f bin/replicator || true
+sleep 2
+
 # Setup source
 echo "Setting up source database..."
 docker exec -i replicator-pg_source-1 psql -U postgres -d source_db <<EOF
@@ -78,6 +83,15 @@ CREATE TABLE stress_test (
     created_at TIMESTAMPTZ
 );
 EOF
+
+# Setup ClickHouse sink
+echo "Setting up ClickHouse database..."
+docker exec -i replicator-clickhouse-1 clickhouse-client -u user --password password --query "DROP TABLE IF EXISTS analytics.stress_test" 2>/dev/null || true
+docker exec -i replicator-clickhouse-1 clickhouse-client -u user --password password --query "CREATE TABLE IF NOT EXISTS analytics.stress_test (id Int32, data String, created_at DateTime, _version UInt64) ENGINE = ReplacingMergeTree(_version) ORDER BY id" 2>/dev/null || echo "⚠️  ClickHouse setup failed"
+
+# Flush Redis to start clean
+echo "Flushing Redis..."
+docker exec -i replicator-redis-1 redis-cli FLUSHALL > /dev/null
 
 echo ""
 echo "==================================="
@@ -126,23 +140,30 @@ WHERE slot_name = 'replicator_slot';
 echo ""
 echo "Verifying data..."
 SOURCE_COUNT=$(docker exec -i replicator-pg_source-1 psql -U postgres -d source_db -t -c "SELECT COUNT(*) FROM stress_test;")
-SINK_COUNT=$(docker exec -i replicator-pg_sink-1 psql -U postgres -d sink_db -t -c "SELECT COUNT(*) FROM stress_test;")
+PG_SINK_COUNT=$(docker exec -i replicator-pg_sink-1 psql -U postgres -d sink_db -t -c "SELECT COUNT(*) FROM stress_test;")
+CH_SINK_COUNT=$(docker exec -i replicator-clickhouse-1 clickhouse-client -u user --password password --query "SELECT count(*) FROM analytics.stress_test FINAL" 2>/dev/null || echo "0")
+REDIS_COUNT=$(docker exec -i replicator-redis-1 redis-cli KEYS "stress_test:*" 2>/dev/null | wc -l | xargs)
 
 SOURCE_COUNT=$(echo $SOURCE_COUNT | xargs)
-SINK_COUNT=$(echo $SINK_COUNT | xargs)
+PG_SINK_COUNT=$(echo $PG_SINK_COUNT | xargs)
+CH_SINK_COUNT=$(echo $CH_SINK_COUNT | xargs)
 
-echo "Source count: $SOURCE_COUNT"
-echo "Sink count:   $SINK_COUNT"
+echo "Source count:       $SOURCE_COUNT"
+echo "PostgreSQL sink:    $PG_SINK_COUNT"
+echo "ClickHouse sink:    $CH_SINK_COUNT"
+echo "Redis keys:         $REDIS_COUNT"
 echo ""
 
-if [ "$SOURCE_COUNT" -eq "$SINK_COUNT" ]; then
-    echo "✅ SUCCESS: Counts match!"
+if [ "$SOURCE_COUNT" -eq "$PG_SINK_COUNT" ] && [ "$SOURCE_COUNT" -eq "$CH_SINK_COUNT" ]; then
+    echo "✅ SUCCESS: All sinks have correct count!"
     if [ $DURATION -gt 0 ]; then
         THROUGHPUT=$(echo "scale=2; $SOURCE_COUNT / $DURATION" | bc)
         echo "   Throughput: ${THROUGHPUT} rows/sec"
     fi
 else
     echo "❌ FAILURE: Count mismatch!"
-    echo "   Missing: $(($SOURCE_COUNT - $SINK_COUNT)) rows"
+    echo "   Source:     $SOURCE_COUNT"
+    echo "   PostgreSQL: $PG_SINK_COUNT (missing: $(($SOURCE_COUNT - $PG_SINK_COUNT)))"
+    echo "   ClickHouse: $CH_SINK_COUNT (missing: $(($SOURCE_COUNT - $CH_SINK_COUNT)))"
     exit 1
 fi

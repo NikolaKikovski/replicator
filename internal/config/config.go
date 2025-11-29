@@ -25,6 +25,7 @@ type SourceConfig struct {
 type TargetsConfig struct {
 	Postgres   []PostgresTarget   `mapstructure:"postgres"`
 	ClickHouse []ClickHouseTarget `mapstructure:"clickhouse"`
+	Redis      []RedisTarget      `mapstructure:"redis"`
 }
 
 type TargetBase struct {
@@ -44,9 +45,24 @@ type ClickHouseTarget struct {
 	ConnectionString string `mapstructure:"connection_string"`
 }
 
+type RedisTarget struct {
+	TargetBase       `mapstructure:",squash"`
+	ConnectionString string `mapstructure:"connection_string"`
+	KeyPattern       string `mapstructure:"key_pattern"` // e.g. "users:{{.id}}"
+}
+
 type RetryConfig struct {
 	MaxAttempts int           `mapstructure:"max_attempts"`
 	Backoff     time.Duration `mapstructure:"backoff"`
+}
+
+func (r *RetryConfig) setDefaults() {
+	if r.MaxAttempts == 0 {
+		r.MaxAttempts = 3
+	}
+	if r.Backoff == 0 {
+		r.Backoff = 100 * time.Millisecond
+	}
 }
 
 type PipelineConfig struct {
@@ -86,11 +102,45 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	cfg.setDefaults()
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+func (c *Config) setDefaults() {
+	for i := range c.Targets.Postgres {
+		if c.Targets.Postgres[i].BatchSize == 0 {
+			c.Targets.Postgres[i].BatchSize = 1000 // Default
+		}
+		if c.Targets.Postgres[i].BatchInterval == 0 {
+			c.Targets.Postgres[i].BatchInterval = 1 * time.Second // Default
+		}
+		c.Targets.Postgres[i].Retry.setDefaults()
+	}
+
+	for i := range c.Targets.ClickHouse {
+		if c.Targets.ClickHouse[i].BatchSize == 0 {
+			c.Targets.ClickHouse[i].BatchSize = 5000 // Default
+		}
+		if c.Targets.ClickHouse[i].BatchInterval == 0 {
+			c.Targets.ClickHouse[i].BatchInterval = 2 * time.Second // Default
+		}
+		c.Targets.ClickHouse[i].Retry.setDefaults()
+	}
+
+	for i := range c.Targets.Redis {
+		if c.Targets.Redis[i].BatchSize == 0 {
+			c.Targets.Redis[i].BatchSize = 1000 // Default
+		}
+		if c.Targets.Redis[i].BatchInterval == 0 {
+			c.Targets.Redis[i].BatchInterval = 1 * time.Second // Default
+		}
+		c.Targets.Redis[i].Retry.setDefaults()
+	}
 }
 
 func (c *Config) Validate() error {
